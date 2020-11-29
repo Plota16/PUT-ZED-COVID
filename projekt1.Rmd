@@ -1,0 +1,413 @@
+---
+title: "Zaawansoana Eksploracja Danych - Projekt 1 "
+author: "Michał Płocki"
+date: "29 11 2020"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+
+
+
+# Raport na temat śmiertelności Covid-19 w oparciu o badania krwi
+
+
+## 1. Wstęp
+
+### 1.1 Wykorzystane bibloteki:
+
+```{r libraries,echo=TRUE,warning=FALSE}
+library(dplyr)
+library(formattable)
+library(ggplot2)
+library(cellranger)
+library(readxl)
+library(EDAWR)
+library(summarytools)
+library(plotly)
+library(ggforce)
+library(kableExtra)
+library(caret)
+library(cowplot)
+library(tidyr)
+```
+
+
+### 1.2 Zapewnienie powtarzalnosci
+
+```{r seed,echo=TRUE,warning=FALSE}
+
+set.seed(26) #Nr koszulki Johna Terrego
+```
+
+
+### 1.3 Wyczyszczenie zbioru danych
+
+Wykonane operacje:
+
+* Wejściowy zbiór danych zawierał informacje o ID pacjenta tylko w swoim pierwszym wierszu z wynikami. W celu ułatwienia przetwarzania każdy wiersz został uzupełniony o informacje o ID
+
+* Z nazw kolumn usunięto znaki "(", ")", "#", oraz geckie litery alfa i beta utrudniające przetwarzanie . "%"  zastąpiono słowem "percent"
+
+
+```{r load and clean, include=TRUE, echo=TRUE}
+mydata = read_excel("wuhan_blood_sample_data_Jan_Feb_2020.xlsx")
+
+colnames(mydata) <- gsub(" ","_",colnames(mydata))
+colnames(mydata) <- gsub("(%)","_percent",colnames(mydata),fixed = TRUE)
+colnames(mydata) <- gsub("(#)","",colnames(mydata),fixed = TRUE)
+colnames(mydata) <- gsub("(","_",colnames(mydata),fixed = TRUE)
+colnames(mydata) <- gsub(")","",colnames(mydata),fixed = TRUE)
+colnames(mydata) <- gsub("-","_",colnames(mydata),fixed = TRUE)
+
+
+colnames(mydata)[34] <- "Tumor_necrosis_factor"
+colnames(mydata)[37] <- "Interleukin_1"
+colnames(mydata)[52] <- "percentylmphocyte"
+colnames(mydata)[68] <- "glutamyl_transpeptidase"
+colnames(mydata)[71] <- "nCov_nucleic_acid_detection"
+
+curr_id <- 1
+for( i in 1:nrow(mydata)){
+  if( is.na(mydata[i,1])){
+    mydata[i,1] <- curr_id
+  }
+  else{
+    curr_id <- mydata[i,1]
+  }
+}
+
+
+
+```
+
+
+
+
+
+
+
+## 2. Podsumowanie zestawu danych
+Aby dokonać analizy  wejściowy zbiór danych przetworzono na 2 sposoby:
+
+* **df** - Zagregowano po numerze pacjenta, wyliczając średną dla atrybutów
+
+
+
+
+```{r aggregate, include=TRUE, echo=TRUE}
+df <- mydata %>%
+  group_by(PATIENT_ID) %>%
+  summarise(across(everything(), list(mean) ,na.rm = T, .names = "{col}"))
+
+df <- subset(df, (!is.na(df[,2])))
+df <- subset(df, select = -c(2,5,6))
+
+```
+
+
+* **df_by_time** - Przemapowano kolejne timestampy pomiarów na kolejne liczby naturalne. Następnie zagregowano zbiór po nowo wyznaczonych liczbach wyznaczając średnią dla każdego atybutu
+
+
+```{r aggregate_timestamp, include=TRUE,echo=TRUE}
+df_by_time <- mydata
+
+curr_id <- 1
+curr_timestamp <- 1
+
+for( i in 1:nrow(df_by_time)){
+  if( df_by_time[i,1] != curr_id ){
+    curr_timestamp <- 1
+    curr_id <- mydata[i,1]
+  }
+  df_by_time[i,82] <- curr_timestamp
+  curr_timestamp <- curr_timestamp + 1
+}
+
+colnames(df_by_time)[82] <- "timestamp"
+
+df_by_time <- df_by_time %>%
+  group_by(timestamp, outcome) %>%
+  summarise(across(everything(), list(mean) ,na.rm = T, .names = "{col}"))
+
+df_by_time <- subset(df_by_time, select = -c(3,4,5,6,7,8))
+
+```
+
+### 2.1 Zbiór df
+```{r charts, include=TRUE}
+summary(df) %>% kbl() %>% kable_material(c("striped", "hover")) %>% scroll_box(width = "800px")
+
+```  
+
+### 2.2 Zbiór df_timestamp
+```{r charts2, include=TRUE}
+summary(df_by_time) %>% kbl() %>% kable_material(c("striped", "hover")) %>% scroll_box(width = "800px")
+
+```  
+
+
+
+
+
+
+
+
+## 3. Analiza wartośći atrybutów
+
+### 3.1 Wg. zmiany w czasie
+
+Dla każdego a atrubutów utworzono jego wykresy zmiany w czasie (poszczególnych timestampów). Następnie do zbioru **best_attr_by_time ** wybrano 15 nalepszych
+
+```{r analizys,include=TRUE}
+df0 <- head(df_by_time[df_by_time$outcome == 0,],25)
+df1 <- head(df_by_time[df_by_time$outcome == 1,],25)
+
+#Tylko do analizy
+#for(i in 1:ncol(df0)){
+#  tmp <- ggplot(df0, aes_string("timestamp", colnames(df0)[i])) + geom_line(aes(color="Przeżyli")) + geom_line(data=df1,aes(color="Zmarli"))
+#  print(tmp)
+#  }
+
+```
+
+```{r analizys_plots,include=TRUE,warning=FALSE, fig.height=10, fig.width=9}
+
+best_attr_by_time <- c(6, 8, 11, 14, 21, 24, 33, 42, 47,49, 54, 56, 64, 69, 75)
+
+
+best_attr_by_time_names <- c()
+
+for(i in best_attr_by_time){
+  tmp <- colnames(df0[i])
+  best_attr_by_time_names <- c(best_attr_by_time_names, tmp)
+}
+
+data_0 <- data.frame(numer_pomiaru=integer(),
+                     wartosc=double(),
+                     t=character())
+data_1 <- data.frame(numer_pomiaru=integer(),
+                     wartosc=double(),
+                     t=character())
+
+
+for(i in best_attr_by_time){
+  
+  
+  numer_pomiaru <- c(1:25)
+  n <- colnames(df0[i])
+  t <- c(n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n)
+  
+  y <- df0[,i]
+  data_tmp <- data.frame(numer_pomiaru,y,t)
+  colnames(data_tmp)[2] <- "wartosc"
+  data_0 <- rbind(data_0,data_tmp)
+  
+  y <- df1[,i]
+  data_tmp <- data.frame(numer_pomiaru,y,t)
+  colnames(data_tmp)[2] <- "wartosc"
+  data_1 <- rbind(data_1,data_tmp)
+ 
+
+  
+}
+p <- ggplot(data_0, aes(numer_pomiaru,wartosc))  + 
+  geom_line(aes(color="Przeżyli"))  + 
+  geom_line(data=data_1,aes(color="Zmarli")) + 
+  scale_y_continuous(limits = function(y){c(0, max(0.1, y))}) +
+  facet_wrap(~t, scales="free", ncol=3) +theme_light() + 
+  labs(color = "sale year" ) +
+  theme( axis.text = element_text( size = 10 ),
+             legend.position="None", legend.box = "horizontal",
+             axis.title = element_blank(),
+             strip.text = element_text(size = 10, face = "bold")
+           
+           ) +
+ theme(legend.position = "none")
+ggplotly(p)
+```
+
+
+
+### 3.2 Wg.korelacji
+
+
+```{r correlation, warning=FALSE}
+
+calc_cor_df <- function(vec){
+  result <- as.data.frame(matrix(nrow=0,ncol=2))
+  for(i in vec){
+    x <- df$outcome
+    y <- as.vector(df[i])
+    x <- as.vector(df$outcome)
+    x <- x[!is.na(y)]
+    y <- y[!is.na(y)]
+    
+    line <- data.frame(i,abs(cor(x,y)))
+    result <- rbind(result,line)
+  }
+  colnames(result)[1] <-"Parametr"
+  colnames(result)[2] <-"Korelacja (wartość bezwzględna)"
+  
+  result <- result[order(-result$Korelacja),]
+  
+  return(result)
+}
+
+
+res_all <- calc_cor_df(colnames(df))
+res_choosen <- calc_cor_df(best_attr_by_time_names)
+
+
+```
+
+TOP 10 atrybutów pod wzgledem wartosci bezwzglednej korelacji (atrybut, śmiertelność) - **best_attr_by_cor **
+
+```{r correlation_all, warning=FALSE}
+
+res_top_ten <- tail(head(res_all,11),10)
+res_top_ten
+
+```
+
+Następnie porównano je z korelacją (atrybut, śmiertelność) dla atrybutów z  **best_attr_by_time **
+
+```{r correlation_choosen, warning=FALSE}
+
+res_choosen
+
+```
+
+zbiory róznią się miedzy sobą atrybutami:
+
+**best_attr_by_col** zawiera 2 atrybuty nie obecne w zbiorze bazującym na zmianie w czasie.
+
+*  __PATIENT_ID__ oczywiście jest atrybutem bezsensownym, jednak warto zauważyć że jego obecność jest jak najbardziej uzasadniona ze względu na to że w wejściowym zbiorze danych najpierw podani są pacjenici któzy przeżyli a potem ci którzy zmarli
+
+* __Fibrin_degradation_products__ którego wykres w czasie był poszatkowany przez dużą ilość danych NA
+
+
+**best_attr_by_time** zawiera:
+
+* atrybuty __Direct_bilirubin__  i __Total_bilirubin__ - które mają bardzo niską korelacje. wyjaśnieniem tej sytuacji jest bardzo duża zmienność w czasie (od małych do dużych wartości), przez co uśredniona wartość ma małą korelacje
+
+* oraz zmienne __Urea__ i __eosinophils_percent__ które odrzucamy ze wzgledu na duże odstaawanie pod wzgledem korelacji
+
+
+Na podstawie tego wyznaczona została cześć wspóla zawierająca pozosałe 8 atryutów z pierwszego zbioru uzupełnione 2 atrubutami ze zbioru drugiego. ostateczny zbiór wybranych atrybutów prezentuje się następująco:
+
+```{r best_attr, warning=FALSE}
+
+names_time <- res_choosen[,1]
+remove_time <- c("Direct_bilirubin","Total_bilirubin","Urea","eosinophils_percent")
+
+names_cor <- res_top_ten[,1]
+remove_cor <- c("PATIENT_ID","Fibrin_degradation_products")
+
+end_attr <- union(names_cor[! names_cor %in% remove_cor], names_time[! names_time %in% remove_time])
+end_attr
+
+
+df_end <- df %>% select(one_of(c(end_attr,"outcome")))
+```
+
+
+
+
+
+
+
+# 4. Klasyfikacja
+
+## 4.1 Utworzenie klasyfikatora
+
+Na podstawie zbioru danych ograniczonego do podanych wyżej kolumn utworzono klasyfikator:
+
+* zbiór podzelono na zestaw testowy(25%) i uczący(75%)
+
+* do stworzenia schemtu uczącego  użyto **wielokrotnego składania** z 3 złożeniami i 10 powtórzeniami
+
+* Jako algorytmu uczenia maszynowego użyto **random forest** składającego sie z 30 drzew
+
+```{r classification, warning=FALSE}
+
+df_end <- df_end %>% drop_na()
+
+df_end$outcome <- factor(df_end$outcome)
+
+inTraining <- 
+    createDataPartition(
+        y = df_end$outcome,
+        p = .75,
+        list = FALSE)
+
+training <- df_end[ inTraining,]
+testing  <- df_end[-inTraining,]
+
+
+```
+
+```{r train, warning=FALSE}
+
+
+ctrl <- trainControl(
+    method = "repeatedcv",
+    number = 4,
+    repeats = 10)
+
+
+fit <- train(outcome ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             ntree = 30,na.action=na.exclude)
+
+fit
+```
+
+## 4.2 Wynik Klasyfikatora
+
+```{r predict, warning=FALSE}
+
+rfClasses <- predict(fit, newdata = testing)
+
+cm <- confusionMatrix(data = rfClasses, testing$outcome)
+
+
+cm$byClass %>% kbl() %>% kable_material(c("striped", "hover"))
+
+
+
+```
+
+## 4.3 Macierz klasyfikacji
+
+```{r present_table, warning=FALSE}
+
+tmp <- cm$table
+
+rownames(cm$table)[1] <- "Przewidziano przeżycie"
+rownames(cm$table)[2] <- "Przewidziano śmierć"
+colnames(cm$table)[1] <- "Przeżył"
+colnames(cm$table)[2] <- "Umarł"
+cm$table %>% kbl() %>% kable_material(c("striped", "hover"))
+
+```
+
+
+
+
+
+
+
+
